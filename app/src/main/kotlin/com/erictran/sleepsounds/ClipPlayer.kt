@@ -42,7 +42,7 @@ class ClipPlayer {
             next.release()
             return
         }
-        boost(next, event.peakDb)
+        boost(next, event)
         next.setOnCompletionListener { stop() }
         next.start()
         player = next
@@ -51,12 +51,14 @@ class ClipPlayer {
     }
 
     /**
-     * Sounds from across a bedroom are recorded very quietly. Raise the clip so its loudest
-     * point sits just under full volume, without touching the saved file.
+     * Sounds from across a bedroom are recorded very quietly. Raise the clip towards full
+     * volume without touching the saved file, but stop before the room's background noise
+     * turns into loud hiss.
      */
-    private fun boost(target: MediaPlayer, peakDb: Float) {
-        if (peakDb.isNaN()) return
-        val gainDb = (TARGET_PEAK_DB - peakDb).coerceIn(0f, MAX_BOOST_DB)
+    private fun boost(target: MediaPlayer, event: SoundEvent) {
+        if (event.peakDb.isNaN()) return
+        val noiseLimitDb = if (event.floorDb.isNaN()) UNKNOWN_FLOOR_BOOST_DB else MAX_FLOOR_DB - event.floorDb
+        val gainDb = minOf(TARGET_PEAK_DB - event.peakDb, noiseLimitDb).coerceIn(0f, MAX_BOOST_DB)
         if (gainDb < 1f) return
         enhancer = runCatching {
             LoudnessEnhancer(target.audioSessionId).apply {
@@ -85,5 +87,11 @@ class ClipPlayer {
         const val TAG = "ClipPlayer"
         const val TARGET_PEAK_DB = -3f
         const val MAX_BOOST_DB = 30f
+
+        /** Background noise is never raised above this level. */
+        const val MAX_FLOOR_DB = -45f
+
+        /** Boost for clips saved before the noise level was recorded. */
+        const val UNKNOWN_FLOOR_BOOST_DB = 15f
     }
 }

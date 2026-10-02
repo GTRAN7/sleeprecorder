@@ -13,26 +13,60 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Runs a short made-up "night" through the real detection pipeline on a device.
+ * Runs recorded audio through the real detection pipeline on a device.
  *
- * The audio is `night.wav` in the androidTest assets (16 kHz mono 16-bit), which is not in the
- * repository because the source recordings cannot be redistributed. Its layout: speech at 20 s,
- * laughter at 60 s, snoring from 90 s to 150 s and again from 210 s to 240 s, speech at 400 s.
- * The test is skipped when the file is missing.
+ * The audio lives in the androidTest assets as 16 kHz mono 16-bit WAV files, which are not in
+ * the repository: one is built from recordings that cannot be redistributed and the other is
+ * from a private bedroom. Each test is skipped when its file is missing.
  *
- * Pass `-e keep true` to leave the result in the app's storage so it shows up in the UI.
+ * Pass `-e keep true` to leave the results in the app's storage so they show up in the UI.
  */
 @RunWith(AndroidJUnit4::class)
 class SoundAnalyzerTest {
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val context = instrumentation.targetContext
+    private val keep = InstrumentationRegistry.getArguments().getString("keep") == "true"
+
+    /**
+     * `night.wav` is made up: speech at 20 s, laughter at 60 s, snoring from 90 s to 150 s and
+     * again from 210 s to 240 s, speech at 400 s.
+     */
     @Test
     fun findsVoiceClipsAndMergesSnoringIntoOneEpisode() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val context = instrumentation.targetContext
-        val assets = instrumentation.context.assets
-        assumeTrue("night.wav is not bundled", assets.list("").orEmpty().contains("night.wav"))
-        val keep = InstrumentationRegistry.getArguments().getString("keep") == "true"
+        val events = analyse("night.wav")
 
-        val bytes = assets.open("night.wav").use { it.readBytes() }
+        val snoring = events.filter { it.type == SoundType.SNORING }
+        assertEquals("the two snoring bouts are under two minutes apart, so they are one episode", 1, snoring.size)
+        assertTrue("episode spans both bouts", snoring[0].durationMs in 130_000..160_000)
+        assertTrue("sample is at most 30 s", snoring[0].clipMs in 5_000..30_000)
+
+        val voices = events.filter { it.type != SoundType.SNORING }
+        assertEquals("speech, laughter, speech", 3, voices.size)
+        assertEquals(SoundType.TALKING, voices.first().type)
+        assertEquals(SoundType.TALKING, voices.last().type)
+        events.forEach { assertTrue("${it.clip} has audio", it.clip.length() > 1000) }
+    }
+
+    /**
+     * `real.wav` is clips the app saved on a real night, 20 s apart: bedding rustle that was
+     * wrongly saved as talking (twice), people talking outside the room, then snoring.
+     */
+    @Test
+    fun ignoresRustlingButKeepsRealTalkingAndSnoring() {
+        val events = analyse("real.wav")
+
+        val talking = events.filter { it.type == SoundType.TALKING }
+        assertEquals("only the real conversation", 1, talking.size)
+        assertTrue("it is the third clip", talking[0].durationMs > 15_000)
+        assertEquals(1, events.count { it.type == SoundType.SNORING })
+        assertEquals(2, events.size)
+    }
+
+    private fun analyse(asset: String): List<SoundEvent> {
+        val assets = instrumentation.context.assets
+        assumeTrue("$asset is not bundled", assets.list("").orEmpty().contains(asset))
+
+        val bytes = assets.open(asset).use { it.readBytes() }
         val pcm = ShortArray((bytes.size - WAV_HEADER_BYTES) / 2)
         ByteBuffer.wrap(bytes, WAV_HEADER_BYTES, pcm.size * 2).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(pcm)
         val durationMs = AudioConfig.samplesToMs(pcm.size.toLong())
@@ -57,26 +91,12 @@ class SoundAnalyzerTest {
         analyzer.finish()
         classifier.close()
         NightStore.writeMeta(dir, startedAt, startedAt + durationMs, pcm.size.toLong(), emptyList())
-        Log.i(TAG, "Analysed ${durationMs / 1000} s of audio in ${(System.nanoTime() - began) / 1_000_000} ms")
-
-        val events = analyzer.events
-        events.forEach {
+        Log.i(TAG, "$asset: analysed ${durationMs / 1000} s of audio in ${(System.nanoTime() - began) / 1_000_000} ms")
+        analyzer.events.forEach {
             Log.i(TAG, "${it.type} at ${(it.startedAt - startedAt) / 1000} s for ${it.durationMs / 1000} s, " +
-                "clip ${it.clipMs / 1000} s, peak ${it.peakDb} dB, count ${it.count}, ${it.clip.length()} bytes")
+                "clip ${it.clipMs / 1000} s, peak ${it.peakDb} dB, floor ${it.floorDb} dB, count ${it.count}")
         }
-
-        val snoring = events.filter { it.type == SoundType.SNORING }
-        assertEquals("the two snoring bouts are under two minutes apart, so they are one episode", 1, snoring.size)
-        assertTrue("episode spans both bouts", snoring[0].durationMs in 130_000..160_000)
-        assertTrue("sample is at most 30 s", snoring[0].clipMs in 5_000..30_000)
-
-        val voices = events.filter { it.type != SoundType.SNORING }
-        assertEquals("speech, laughter, speech", 3, voices.size)
-        assertEquals(SoundType.TALKING, voices.first().type)
-        assertEquals(SoundType.TALKING, voices.last().type)
-        events.forEach { assertTrue("${it.clip} has audio", it.clip.length() > 1000) }
-
-        if (!keep) dir.deleteRecursively()
+        return analyzer.events.toList()
     }
 
     private companion object {

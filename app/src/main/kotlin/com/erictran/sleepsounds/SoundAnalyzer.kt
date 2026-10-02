@@ -11,7 +11,8 @@ import kotlin.math.sqrt
 /**
  * Listens to the night's audio as it arrives and saves the interesting parts as clips.
  *
- * Twice a second the last second of audio is classified. Talking and laughing become one clip
+ * Low rumble is filtered out first: it carries nothing the classifier uses and is most of the
+ * background noise in a bedroom. Twice a second the last second of audio is classified. Talking and laughing become one clip
  * per outburst, with a few seconds of lead-in and tail. Snoring is merged: snores less than
  * two minutes apart belong to one episode, which is stored as a single event with a 30-second
  * sample taken from its loudest stretch.
@@ -32,6 +33,8 @@ class SoundAnalyzer(
     private val ring = ShortArray(RING_SAMPLES)
     private val window = FloatArray(YamnetClassifier.WINDOW_SAMPLES)
     private val scratch = ShortArray(RING_SAMPLES)
+    private val highPass = HighPass()
+    private var filtered = ShortArray(0)
     private val scoreLog = File(dir, "scores.csv").bufferedWriter()
     private var total = 0L
     private var lastWindowAt = 0L
@@ -40,19 +43,23 @@ class SoundAnalyzer(
     private var snore: SnoreEpisode? = null
     private var previousWasSnore = false
 
-    private enum class Kind { NONE, TALK, LAUGH, SNORE }
+    /** FAINT_SNORE is too weak to count on its own but is taken as snoring next to clear snores. */
+    private enum class Kind { NONE, TALK, LAUGH, SNORE, FAINT_SNORE }
 
     private class VoiceClip(val encoder: ClipEncoder, val part: File, val startSample: Long) {
         var talkWindows = 0
         var laughWindows = 0
         var lastHeardAt = 0L
         var peak = 0
+        var floorDb = 0.0
     }
 
     private class SnoreEpisode(val startSample: Long) {
         var lastHeardAt = 0L
         var windows = 0
+        var clearWindows = 0
         var bursts = 0
+        var floorDb = 0.0
 
         // The episode is cut into 30-second blocks and only the loudest one so far is kept.
         var block = ShortArray(SNORE_SAMPLE_SAMPLES)
@@ -79,7 +86,10 @@ class SoundAnalyzer(
         scoreLog.write("ms,level_db,talk,laugh,snore\n")
     }
 
-    fun process(pcm: ShortArray, count: Int) {
+    fun process(raw: ShortArray, count: Int) {
+        if (filtered.size < count) filtered = ShortArray(count)
+        val pcm = filtered
+        highPass.filter(raw, pcm, count)
         for (i in 0 until count) ring[((total + i) % RING_SAMPLES).toInt()] = pcm[i]
         total += count
 
@@ -122,6 +132,7 @@ class SoundAnalyzer(
             scores.snore >= SNORE_THRESHOLD -> Kind.SNORE
             scores.laugh >= LAUGH_THRESHOLD -> Kind.LAUGH
             scores.talk >= TALK_THRESHOLD -> Kind.TALK
+            scores.snore >= FAINT_SNORE_THRESHOLD -> Kind.FAINT_SNORE
             else -> Kind.NONE
         }
         val levelDb = if (meanSquare > 0) 10 * log10(meanSquare) else -100.0
@@ -132,17 +143,18 @@ class SoundAnalyzer(
             ),
         )
 
-        trackVoice(kind)
-        trackSnore(kind, meanSquare)
+        trackVoice(kind, levelDb)
+        trackSnore(kind, meanSquare, levelDb)
     }
 
-    private fun trackVoice(kind: Kind) {
+    private fun trackVoice(kind: Kind, levelDb: Double) {
         if (kind == Kind.TALK || kind == Kind.LAUGH) {
             val clip = voice ?: openVoice()
             if (kind == Kind.LAUGH) clip.laughWindows++ else clip.talkWindows++
             clip.lastHeardAt = total
         }
         val clip = voice ?: return
+        clip.floorDb = min(clip.floorDb, levelDb)
         if (total - clip.lastHeardAt >= VOICE_TAIL_SAMPLES || total - clip.startSample >= VOICE_MAX_SAMPLES) closeVoice()
     }
 
@@ -161,7 +173,7 @@ class SoundAnalyzer(
         val clip = voice ?: return
         voice = null
         clip.encoder.finish()
-        // One isolated hit is usually a cough or a creak the model mistook for a voice.
+        // A hit or two on their own are usually a cough or bedding rustle the model mistook for a voice.
         if (clip.talkWindows + clip.laughWindows < MIN_VOICE_WINDOWS) {
             clip.part.delete()
             return
@@ -175,21 +187,25 @@ class SoundAnalyzer(
                 clip = NightStore.finalise(clip.part),
                 clipMs = lengthMs,
                 peakDb = peakDb(clip.peak),
+                floorDb = clip.floorDb.toFloat(),
                 count = 0,
             ),
         )
     }
 
-    private fun trackSnore(kind: Kind, meanSquare: Double) {
-        if (kind == Kind.SNORE) {
+    private fun trackSnore(kind: Kind, meanSquare: Double, levelDb: Double) {
+        val heard = kind == Kind.SNORE || kind == Kind.FAINT_SNORE
+        if (heard) {
             val episode = snore ?: openSnore()
             episode.windows++
+            if (kind == Kind.SNORE) episode.clearWindows++
             if (!previousWasSnore) episode.bursts++
             episode.lastHeardAt = total
             episode.blockEnergy += meanSquare
         }
-        previousWasSnore = kind == Kind.SNORE
+        previousWasSnore = heard
         val episode = snore ?: return
+        episode.floorDb = min(episode.floorDb, levelDb)
         if (total - episode.lastHeardAt >= SNORE_MERGE_SAMPLES) closeSnore()
     }
 
@@ -217,8 +233,9 @@ class SoundAnalyzer(
         val episode = snore ?: return
         snore = null
         episode.keepBlockIfLouder()
-        // A couple of hits on their own are more likely a snort or a rustle than snoring.
-        if (episode.windows < MIN_SNORE_WINDOWS || episode.bestLength == 0) return
+        // A couple of hits, or only faint ones, are more likely a snort or heavy breathing than snoring.
+        if (episode.windows < MIN_SNORE_WINDOWS || episode.clearWindows < MIN_CLEAR_SNORE_WINDOWS) return
+        if (episode.bestLength == 0) return
 
         val part = NightStore.partFile(dir, clipIndex++)
         ClipEncoder(part, AudioConfig.SAMPLE_RATE).apply {
@@ -233,6 +250,7 @@ class SoundAnalyzer(
                 clip = NightStore.finalise(part),
                 clipMs = AudioConfig.samplesToMs(episode.bestLength.toLong()),
                 peakDb = peakDb(peakOf(episode.best, 0, episode.bestLength)),
+                floorDb = episode.floorDb.toFloat(),
                 count = episode.bursts,
             ),
         )
@@ -265,10 +283,11 @@ class SoundAnalyzer(
         const val HOP_SAMPLES = AudioConfig.SAMPLE_RATE / 2
         const val RING_SAMPLES = AudioConfig.SAMPLE_RATE * 8
 
-        // Starting points chosen from sample recordings; to be tuned on real nights.
+        // Tuned on one real night so far (2 October 2026).
         const val TALK_THRESHOLD = 0.5f
         const val LAUGH_THRESHOLD = 0.1f
         const val SNORE_THRESHOLD = 0.3f
+        const val FAINT_SNORE_THRESHOLD = 0.1f
 
         // Bring each window to about -25 dBFS, boosting by at most 30 dB.
         const val TARGET_RMS = 0.056
@@ -277,11 +296,12 @@ class SoundAnalyzer(
         const val VOICE_LEAD_IN_SAMPLES = AudioConfig.SAMPLE_RATE * 3
         const val VOICE_TAIL_SAMPLES = AudioConfig.SAMPLE_RATE * 4
         const val VOICE_MAX_SAMPLES = AudioConfig.SAMPLE_RATE * 120
-        const val MIN_VOICE_WINDOWS = 2
+        const val MIN_VOICE_WINDOWS = 3
         const val MIN_LAUGH_WINDOWS = 2
 
         const val SNORE_MERGE_SAMPLES = AudioConfig.SAMPLE_RATE * 120
         const val SNORE_SAMPLE_SAMPLES = AudioConfig.SAMPLE_RATE * 30
         const val MIN_SNORE_WINDOWS = 4
+        const val MIN_CLEAR_SNORE_WINDOWS = 2
     }
 }

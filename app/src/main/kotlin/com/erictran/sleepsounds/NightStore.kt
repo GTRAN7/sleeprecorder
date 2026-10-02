@@ -41,6 +41,8 @@ data class SoundEvent(
     val clipMs: Long,
     /** Loudest sample in the clip in dBFS, or NaN when unknown. Used to boost quiet clips on playback. */
     val peakDb: Float,
+    /** Background noise level around the clip in dBFS, or NaN when unknown. Limits the playback boost. */
+    val floorDb: Float,
     /** Rough number of snores in a snoring episode, 0 for other types. */
     val count: Int,
 )
@@ -105,7 +107,10 @@ object NightStore {
                     .put("file", it.clip.name)
                     .put("clipMs", it.clipMs)
                     .put("count", it.count)
-                    .apply { if (!it.peakDb.isNaN()) put("peakDb", it.peakDb.toDouble()) }
+                    .apply {
+                        if (!it.peakDb.isNaN()) put("peakDb", it.peakDb.toDouble())
+                        if (!it.floorDb.isNaN()) put("floorDb", it.floorDb.toDouble())
+                    }
             },
         )
         writeAtomically(File(dir, EVENTS), json.toString())
@@ -171,6 +176,7 @@ object NightStore {
                 clip = clip,
                 clipMs = e.getLong("clipMs"),
                 peakDb = e.optDouble("peakDb").toFloat(),
+                floorDb = e.optDouble("floorDb").toFloat(),
                 count = e.optInt("count"),
             )
         }
@@ -184,7 +190,7 @@ object NightStore {
             val offset = i * AudioConfig.LEGACY_SEGMENT_MS
             val length = if (i == segments.lastIndex && durationMs > offset) durationMs - offset
             else AudioConfig.LEGACY_SEGMENT_MS
-            SoundEvent(SoundType.RECORDING, startedAt + offset, length, file, length, Float.NaN, 0)
+            SoundEvent(SoundType.RECORDING, startedAt + offset, length, file, length, Float.NaN, Float.NaN, 0)
         }
     }
 
