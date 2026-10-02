@@ -8,7 +8,7 @@ import java.io.File
 import java.nio.ByteOrder
 
 /** Encodes 16-bit mono PCM to AAC and writes it as one .m4a file. Not thread safe. */
-class SegmentEncoder(file: File, private val sampleRate: Int) {
+class ClipEncoder(file: File, private val sampleRate: Int) {
     private val codec = MediaCodec.createEncoderByType(MIME)
     private val muxer = MediaMuxer(file.path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
     private val info = MediaCodec.BufferInfo()
@@ -26,15 +26,16 @@ class SegmentEncoder(file: File, private val sampleRate: Int) {
         codec.start()
     }
 
-    fun write(pcm: ShortArray, count: Int) {
-        var offset = 0
-        while (offset < count) {
+    fun write(pcm: ShortArray, count: Int, from: Int = 0) {
+        var offset = from
+        val end = from + count
+        while (offset < end) {
             val index = codec.dequeueInputBuffer(TIMEOUT_US)
             if (index >= 0) {
                 val buffer = codec.getInputBuffer(index)!!
                 buffer.clear()
                 val shorts = buffer.order(ByteOrder.nativeOrder()).asShortBuffer()
-                val n = minOf(shorts.remaining(), count - offset)
+                val n = minOf(shorts.remaining(), end - offset)
                 shorts.put(pcm, offset, n)
                 codec.queueInputBuffer(index, 0, n * 2, presentationTimeUs(), 0)
                 samplesIn += n

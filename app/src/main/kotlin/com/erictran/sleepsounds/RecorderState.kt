@@ -10,6 +10,10 @@ object RecorderState {
         /** [android.os.SystemClock.elapsedRealtime] at start, for a timer that survives clock changes. */
         val startedAtElapsed: Long = 0,
         val gaps: Int = 0,
+        /** Events saved so far tonight. */
+        val talking: Int = 0,
+        val laughing: Int = 0,
+        val snoring: Int = 0,
         /** Why the last recording stopped on its own, if it did. */
         val error: String? = null,
     )

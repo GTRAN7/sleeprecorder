@@ -23,7 +23,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import java.io.File
 import kotlin.math.log10
 
 /**
@@ -77,15 +76,8 @@ class RecordingService : Service() {
         var samples = 0L
         var error: String? = null
         var audio: AudioRecord? = null
-        var encoder: SegmentEncoder? = null
-        var part: File? = null
-
-        fun closeSegment() {
-            val open = encoder ?: return
-            encoder = null
-            open.finish()
-            part?.let(NightStore::finalise)
-        }
+        var classifier: YamnetClassifier? = null
+        var analyzer: SoundAnalyzer? = null
 
         try {
             NightStore.writeMeta(dir, startedAt, null, 0, gaps)
@@ -93,9 +85,11 @@ class RecordingService : Service() {
             RecorderState.status.value =
                 RecorderState.Status(recording = true, nightId = dir.name, startedAtElapsed = startedAtElapsed)
 
+            val model = YamnetClassifier(this).also { classifier = it }
+            val listener = SoundAnalyzer(dir, startedAt, model, ::countEvent).also { analyzer = it }
+
             val buffer = ShortArray(AudioConfig.SAMPLE_RATE / 10)
-            var segmentIndex = 0
-            var segmentSamples = 0L
+            var samplesAtLastSave = 0L
             // How far wall time is ahead of recorded audio. It creeps slowly as the two clocks
             // drift, so follow it and treat only a sudden jump as lost audio.
             var lagMs = 0.0
@@ -111,24 +105,12 @@ class RecordingService : Service() {
                     continue
                 }
 
-                var segment = encoder
-                if (segment == null) {
-                    if (dir.usableSpace < MIN_FREE_BYTES) {
-                        error = "Stopped because the phone is almost out of storage."
-                        break
-                    }
-                    val file = NightStore.partFile(dir, segmentIndex)
-                    segment = SegmentEncoder(file, AudioConfig.SAMPLE_RATE)
-                    part = file
-                    encoder = segment
-                }
-                segment.write(buffer, read)
+                listener.process(buffer, read)
                 val firstRead = samples == 0L
                 samples += read
-                segmentSamples += read
                 RecorderState.levelDb.value = levelDb(buffer, read)
 
-                val audioMs = samples * 1000 / AudioConfig.SAMPLE_RATE
+                val audioMs = AudioConfig.samplesToMs(samples)
                 val lagNow = (SystemClock.elapsedRealtime() - startedAtElapsed - audioMs).toDouble()
                 if (firstRead) {
                     // The microphone takes a moment to open; that is not lost audio.
@@ -136,17 +118,21 @@ class RecordingService : Service() {
                 } else if (lagNow - lagMs > GAP_THRESHOLD_MS) {
                     gaps += Gap(audioMs, (lagNow - lagMs).toLong())
                     lagMs = lagNow
+                    listener.lostMs = gaps.sumOf { it.lengthMs }
                     Log.w(TAG, "Gap of ${gaps.last().lengthMs} ms at $audioMs ms")
                     RecorderState.status.value = RecorderState.status.value.copy(gaps = gaps.size)
                 } else {
                     lagMs += (lagNow - lagMs) * LAG_SMOOTHING
                 }
 
-                if (segmentSamples >= AudioConfig.SEGMENT_SAMPLES) {
-                    closeSegment()
-                    segmentIndex++
-                    segmentSamples = 0
+                // Save progress now and then, so a night that gets killed still knows how long it ran.
+                if (samples - samplesAtLastSave >= SAVE_EVERY_SAMPLES) {
+                    samplesAtLastSave = samples
                     NightStore.writeMeta(dir, startedAt, null, samples, gaps)
+                    if (dir.usableSpace < MIN_FREE_BYTES) {
+                        error = "Stopped because the phone is almost out of storage."
+                        break
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -155,12 +141,23 @@ class RecordingService : Service() {
         } finally {
             audio?.release()
             runCatching {
-                closeSegment()
+                analyzer?.finish()
                 NightStore.writeMeta(dir, startedAt, System.currentTimeMillis(), samples, gaps)
             }.onFailure { Log.e(TAG, "Could not finalise the night", it) }
+            runCatching { classifier?.close() }
             RecorderState.levelDb.value = RecorderState.SILENCE_DB
             RecorderState.status.value = RecorderState.Status(error = error)
             mainHandler.post(::shutDown)
+        }
+    }
+
+    private fun countEvent(event: SoundEvent) {
+        val status = RecorderState.status.value
+        RecorderState.status.value = when (event.type) {
+            SoundType.TALKING -> status.copy(talking = status.talking + 1)
+            SoundType.LAUGHING -> status.copy(laughing = status.laughing + 1)
+            SoundType.SNORING -> status.copy(snoring = status.snoring + 1)
+            SoundType.RECORDING -> status
         }
     }
 
@@ -248,6 +245,7 @@ class RecordingService : Service() {
         private const val WAKE_LOCK_LIMIT_MS = 18 * 60 * 60 * 1000L
         private const val MIN_FREE_BYTES = 200L * 1024 * 1024
         private const val MIC_RETRY_MS = 1000L
+        private const val SAVE_EVERY_SAMPLES = AudioConfig.SAMPLE_RATE * 300L
         private const val STOP_TIMEOUT_MS = 5000L
         private const val GAP_THRESHOLD_MS = 2000
         private const val LAG_SMOOTHING = 0.01

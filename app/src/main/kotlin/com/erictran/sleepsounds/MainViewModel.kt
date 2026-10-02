@@ -13,7 +13,7 @@ import kotlinx.coroutines.withContext
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val nights = MutableStateFlow<List<Night>>(emptyList())
-    val player = NightPlayer()
+    val player = ClipPlayer()
 
     init {
         // Reload when recording starts or stops, which is when the set of finished nights changes.
@@ -22,7 +22,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             while (true) {
-                delay(250)
+                delay(200)
                 player.publish()
             }
         }
@@ -33,9 +33,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun delete(night: Night) {
-        if (player.state.value.nightId == night.id) player.stop()
+        player.stop()
         viewModelScope.launch {
             withContext(Dispatchers.IO) { NightStore.delete(night) }
+            refresh()
+        }
+    }
+
+    fun delete(night: Night, event: SoundEvent) {
+        if (player.state.value.clip == event.clip) player.stop()
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { NightStore.deleteEvent(night, event) }
             refresh()
         }
     }

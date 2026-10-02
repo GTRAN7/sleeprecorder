@@ -5,3 +5,6 @@ local.properties
 .idea/
 *.iml
 .DS_Store
+
+# Test recordings used by the detection test; not redistributable.
+app/src/androidTest/assets/
