@@ -18,10 +18,13 @@ class ClipPlayer {
     private var enhancer: LoudnessEnhancer? = null
     private var clip: File? = null
 
-    /** Starts [event]'s clip, or pauses and resumes it if it is the one already loaded. */
-    fun toggle(event: SoundEvent) {
+    /**
+     * Starts [event]'s clip where the sound was detected, or pauses and resumes it if it is the
+     * one already loaded. [fromStart] plays the audio saved from before the detection too.
+     */
+    fun toggle(event: SoundEvent, fromStart: Boolean = false) {
         val current = player
-        if (current != null && clip == event.clip) {
+        if (current != null && clip == event.clip && !fromStart) {
             if (current.isPlaying) current.pause() else current.start()
             publish()
             return
@@ -43,6 +46,7 @@ class ClipPlayer {
             return
         }
         boost(next, event)
+        if (!fromStart) next.seekTo(event.leadInMs.coerceIn(0, next.duration.toLong()).toInt())
         next.setOnCompletionListener { stop() }
         next.start()
         player = next

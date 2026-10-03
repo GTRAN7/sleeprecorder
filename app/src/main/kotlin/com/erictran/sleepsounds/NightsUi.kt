@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -86,7 +87,7 @@ fun NightScreen(
     playback: ClipPlayer.State,
     canPlay: Boolean,
     onBack: () -> Unit,
-    onTogglePlay: (SoundEvent) -> Unit,
+    onTogglePlay: (SoundEvent, Boolean) -> Unit,
     onDeleteEvent: (SoundEvent) -> Unit,
     onDeleteNight: () -> Unit,
 ) {
@@ -178,7 +179,8 @@ fun NightScreen(
                     event = event,
                     playback = playback.takeIf { it.clip == event.clip },
                     canPlay = canPlay,
-                    onTogglePlay = { onTogglePlay(event) },
+                    onTogglePlay = { onTogglePlay(event, false) },
+                    onPlayFromStart = { onTogglePlay(event, true) },
                     onDelete = { deletingEvent = event },
                 )
             }
@@ -279,6 +281,7 @@ private fun EventRow(
     playback: ClipPlayer.State?,
     canPlay: Boolean,
     onTogglePlay: () -> Unit,
+    onPlayFromStart: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
@@ -305,6 +308,17 @@ private fun EventRow(
                         )
                     }
                     Text(event.detail(), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (event.leadInMs >= MIN_LEAD_IN_MS) {
+                        Text(
+                            "Play from ${formatDuration(event.leadInMs)} before",
+                            color = if (canPlay) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable(enabled = canPlay, onClick = onPlayFromStart)
+                                .padding(vertical = 6.dp),
+                        )
+                    }
                 }
                 IconButton(onClick = onDelete) {
                     Icon(
@@ -334,3 +348,4 @@ private fun SoundEvent.detail(): String = when (type) {
 }
 
 private const val MIN_MARK_DP = 3
+private const val MIN_LEAD_IN_MS = 5_000L

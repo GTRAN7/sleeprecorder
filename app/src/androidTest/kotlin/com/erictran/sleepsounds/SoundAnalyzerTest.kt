@@ -44,6 +44,10 @@ class SoundAnalyzerTest {
         assertEquals("speech, laughter, speech", 3, voices.size)
         assertEquals(SoundType.TALKING, voices.first().type)
         assertEquals(SoundType.TALKING, voices.last().type)
+        assertTrue("first clip keeps everything before it, from the start of the night", voices[0].leadInMs in 12_000..17_000)
+        assertTrue("second clip reaches back to the end of the first", voices[1].leadInMs in 20_000..30_000)
+        assertTrue("last clip keeps the full 30 s before", voices[2].leadInMs in 26_000..28_000)
+        voices.forEach { assertTrue("clip holds lead-in plus the sound", it.clipMs == it.leadInMs + it.durationMs) }
         events.forEach { assertTrue("${it.clip} has audio", it.clip.length() > 1000) }
     }
 

@@ -39,6 +39,11 @@ data class SoundEvent(
     val clip: File,
     /** Length of the saved audio, which for snoring is only a sample of the episode. */
     val clipMs: Long,
+    /**
+     * Audio saved from before the sound was detected. Playback starts just after it, with an
+     * option to hear it.
+     */
+    val leadInMs: Long = 0,
     /** Loudest sample in the clip in dBFS, or NaN when unknown. Used to boost quiet clips on playback. */
     val peakDb: Float,
     /** Background noise level around the clip in dBFS, or NaN when unknown. Limits the playback boost. */
@@ -107,6 +112,7 @@ object NightStore {
                     .put("file", it.clip.name)
                     .put("clipMs", it.clipMs)
                     .put("count", it.count)
+                    .put("leadInMs", it.leadInMs)
                     .apply {
                         if (!it.peakDb.isNaN()) put("peakDb", it.peakDb.toDouble())
                         if (!it.floorDb.isNaN()) put("floorDb", it.floorDb.toDouble())
@@ -175,6 +181,7 @@ object NightStore {
                 durationMs = e.getLong("durationMs"),
                 clip = clip,
                 clipMs = e.getLong("clipMs"),
+                leadInMs = e.optLong("leadInMs"),
                 peakDb = e.optDouble("peakDb").toFloat(),
                 floorDb = e.optDouble("floorDb").toFloat(),
                 count = e.optInt("count"),
@@ -190,7 +197,7 @@ object NightStore {
             val offset = i * AudioConfig.LEGACY_SEGMENT_MS
             val length = if (i == segments.lastIndex && durationMs > offset) durationMs - offset
             else AudioConfig.LEGACY_SEGMENT_MS
-            SoundEvent(SoundType.RECORDING, startedAt + offset, length, file, length, Float.NaN, Float.NaN, 0)
+            SoundEvent(SoundType.RECORDING, startedAt + offset, length, file, length, peakDb = Float.NaN, floorDb = Float.NaN, count = 0)
         }
     }
 

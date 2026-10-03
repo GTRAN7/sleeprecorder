@@ -12,8 +12,10 @@ import kotlin.math.sqrt
  * Listens to the night's audio as it arrives and saves the interesting parts as clips.
  *
  * Low rumble is filtered out first: it carries nothing the classifier uses and is most of the
- * background noise in a bedroom. Twice a second the last second of audio is classified. Talking and laughing become one clip
- * per outburst, with a few seconds of lead-in and tail. Snoring is merged: snores less than
+ * background noise in a bedroom. Twice a second the last second of audio is classified.
+ * Talking and laughing become one clip per outburst, with a few seconds of tail and up to 30
+ * seconds of what came before, because the start of an outburst often scores too low to be
+ * caught. Snoring is merged: snores less than
  * two minutes apart belong to one episode, which is stored as a single event with a 30-second
  * sample taken from its loudest stretch.
  *
@@ -40,13 +42,15 @@ class SoundAnalyzer(
     private var lastWindowAt = 0L
     private var clipIndex = 0
     private var voice: VoiceClip? = null
+    private var lastVoiceEnd = 0L
     private var snore: SnoreEpisode? = null
     private var previousWasSnore = false
 
     /** FAINT_SNORE is too weak to count on its own but is taken as snoring next to clear snores. */
     private enum class Kind { NONE, TALK, LAUGH, SNORE, FAINT_SNORE }
 
-    private class VoiceClip(val encoder: ClipEncoder, val part: File, val startSample: Long) {
+    /** [clipStart] is where the saved audio begins; [startSample] is where the voice was first heard. */
+    private class VoiceClip(val encoder: ClipEncoder, val part: File, val clipStart: Long, val startSample: Long) {
         var talkWindows = 0
         var laughWindows = 0
         var lastHeardAt = 0L
@@ -159,9 +163,12 @@ class SoundAnalyzer(
     }
 
     private fun openVoice(): VoiceClip {
-        val length = min(total, YamnetClassifier.WINDOW_SAMPLES + VOICE_LEAD_IN_SAMPLES.toLong()).toInt()
+        val heardFrom = max(0L, total - YamnetClassifier.WINDOW_SAMPLES - VOICE_LEAD_IN_SAMPLES)
+        // Reach back up to 30 s, but not into the previous voice clip.
+        val clipStart = maxOf(0L, lastVoiceEnd, total - YamnetClassifier.WINDOW_SAMPLES - VOICE_BEFORE_SAMPLES)
+        val length = (total - clipStart).toInt()
         val part = NightStore.partFile(dir, clipIndex++)
-        val clip = VoiceClip(ClipEncoder(part, AudioConfig.SAMPLE_RATE), part, total - length)
+        val clip = VoiceClip(ClipEncoder(part, AudioConfig.SAMPLE_RATE), part, clipStart, max(heardFrom, clipStart))
         copyRecent(length, scratch)
         clip.encoder.write(scratch, length)
         clip.peak = peakOf(scratch, 0, length)
@@ -172,20 +179,21 @@ class SoundAnalyzer(
     private fun closeVoice() {
         val clip = voice ?: return
         voice = null
+        lastVoiceEnd = total
         clip.encoder.finish()
         // A hit or two on their own are usually a cough or bedding rustle the model mistook for a voice.
         if (clip.talkWindows + clip.laughWindows < MIN_VOICE_WINDOWS) {
             clip.part.delete()
             return
         }
-        val lengthMs = AudioConfig.samplesToMs(total - clip.startSample)
         addEvent(
             SoundEvent(
                 type = if (clip.laughWindows >= MIN_LAUGH_WINDOWS) SoundType.LAUGHING else SoundType.TALKING,
                 startedAt = wallTimeAt(clip.startSample),
-                durationMs = lengthMs,
+                durationMs = AudioConfig.samplesToMs(total - clip.startSample),
                 clip = NightStore.finalise(clip.part),
-                clipMs = lengthMs,
+                clipMs = AudioConfig.samplesToMs(total - clip.clipStart),
+                leadInMs = AudioConfig.samplesToMs(clip.startSample - clip.clipStart),
                 peakDb = peakDb(clip.peak),
                 floorDb = clip.floorDb.toFloat(),
                 count = 0,
@@ -281,7 +289,7 @@ class SoundAnalyzer(
     private companion object {
         const val FULL_SCALE = 32768.0
         const val HOP_SAMPLES = AudioConfig.SAMPLE_RATE / 2
-        const val RING_SAMPLES = AudioConfig.SAMPLE_RATE * 8
+        const val RING_SAMPLES = AudioConfig.SAMPLE_RATE * 40
 
         // Tuned on one real night so far (2 October 2026).
         const val TALK_THRESHOLD = 0.5f
@@ -294,6 +302,7 @@ class SoundAnalyzer(
         const val MAX_GAIN = 31.6
 
         const val VOICE_LEAD_IN_SAMPLES = AudioConfig.SAMPLE_RATE * 3
+        const val VOICE_BEFORE_SAMPLES = AudioConfig.SAMPLE_RATE * 30
         const val VOICE_TAIL_SAMPLES = AudioConfig.SAMPLE_RATE * 4
         const val VOICE_MAX_SAMPLES = AudioConfig.SAMPLE_RATE * 120
         const val MIN_VOICE_WINDOWS = 3
