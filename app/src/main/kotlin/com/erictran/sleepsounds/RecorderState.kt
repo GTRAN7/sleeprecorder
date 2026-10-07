@@ -14,6 +14,7 @@ object RecorderState {
         val talking: Int = 0,
         val laughing: Int = 0,
         val snoring: Int = 0,
+        val coughing: Int = 0,
         /** Why the last recording stopped on its own, if it did. */
         val error: String? = null,
     )

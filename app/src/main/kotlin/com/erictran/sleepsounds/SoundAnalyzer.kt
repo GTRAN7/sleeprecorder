@@ -43,16 +43,19 @@ class SoundAnalyzer(
     private var clipIndex = 0
     private var voice: VoiceClip? = null
     private var lastVoiceEnd = 0L
+    private var previousWasCough = false
     private var snore: SnoreEpisode? = null
     private var previousWasSnore = false
 
     /** FAINT_SNORE is too weak to count on its own but is taken as snoring next to clear snores. */
-    private enum class Kind { NONE, TALK, LAUGH, SNORE, FAINT_SNORE }
+    private enum class Kind { NONE, TALK, LAUGH, COUGH, SNORE, FAINT_SNORE }
 
     /** [clipStart] is where the saved audio begins; [startSample] is where the voice was first heard. */
     private class VoiceClip(val encoder: ClipEncoder, val part: File, val clipStart: Long, val startSample: Long) {
         var talkWindows = 0
         var laughWindows = 0
+        var coughWindows = 0
+        var coughs = 0
         var lastHeardAt = 0L
         var peak = 0
         var floorDb = 0.0
@@ -87,7 +90,7 @@ class SoundAnalyzer(
     }
 
     init {
-        scoreLog.write("ms,level_db,talk,laugh,snore\n")
+        scoreLog.write("ms,level_db,talk,laugh,snore,cough\n")
     }
 
     fun process(raw: ShortArray, count: Int) {
@@ -134,6 +137,7 @@ class SoundAnalyzer(
         val scores = classifier.classify(window)
         val kind = when {
             scores.snore >= SNORE_THRESHOLD -> Kind.SNORE
+            scores.cough >= COUGH_THRESHOLD -> Kind.COUGH
             scores.laugh >= LAUGH_THRESHOLD -> Kind.LAUGH
             scores.talk >= TALK_THRESHOLD -> Kind.TALK
             scores.snore >= FAINT_SNORE_THRESHOLD -> Kind.FAINT_SNORE
@@ -142,8 +146,8 @@ class SoundAnalyzer(
         val levelDb = if (meanSquare > 0) 10 * log10(meanSquare) else -100.0
         scoreLog.write(
             String.format(
-                Locale.US, "%d,%.0f,%.2f,%.2f,%.2f\n",
-                AudioConfig.samplesToMs(total), levelDb, scores.talk, scores.laugh, scores.snore,
+                Locale.US, "%d,%.0f,%.2f,%.2f,%.2f,%.2f\n",
+                AudioConfig.samplesToMs(total), levelDb, scores.talk, scores.laugh, scores.snore, scores.cough,
             ),
         )
 
@@ -152,11 +156,19 @@ class SoundAnalyzer(
     }
 
     private fun trackVoice(kind: Kind, levelDb: Double) {
-        if (kind == Kind.TALK || kind == Kind.LAUGH) {
+        if (kind == Kind.TALK || kind == Kind.LAUGH || kind == Kind.COUGH) {
             val clip = voice ?: openVoice()
-            if (kind == Kind.LAUGH) clip.laughWindows++ else clip.talkWindows++
+            when (kind) {
+                Kind.LAUGH -> clip.laughWindows++
+                Kind.COUGH -> {
+                    if (!previousWasCough) clip.coughs++
+                    clip.coughWindows++
+                }
+                else -> clip.talkWindows++
+            }
             clip.lastHeardAt = total
         }
+        previousWasCough = kind == Kind.COUGH
         val clip = voice ?: return
         clip.floorDb = min(clip.floorDb, levelDb)
         if (total - clip.lastHeardAt >= VOICE_TAIL_SAMPLES || total - clip.startSample >= VOICE_MAX_SAMPLES) closeVoice()
@@ -181,14 +193,26 @@ class SoundAnalyzer(
         voice = null
         lastVoiceEnd = total
         clip.encoder.finish()
-        // A hit or two on their own are usually a cough or bedding rustle the model mistook for a voice.
-        if (clip.talkWindows + clip.laughWindows < MIN_VOICE_WINDOWS) {
+        // Laughing and coughing win over talking because the model also scores both as speech:
+        // a coughing fit flips between "cough" and "speech" from one half second to the next.
+        // Real speech almost never scores as a cough, so cough hits at half the speech hits
+        // mean coughing, while a long sleep-talk with one cough in it stays talking.
+        val type = when {
+            clip.laughWindows >= MIN_LAUGH_WINDOWS -> SoundType.LAUGHING
+            clip.coughWindows > 0 && clip.coughWindows * 2 >= clip.talkWindows -> SoundType.COUGHING
+            else -> SoundType.TALKING
+        }
+        // A hit or two of "speech" on their own are usually bedding rustle. A cough is short, but
+        // the model rarely calls anything else a cough, so one clear hit is enough.
+        val enough = if (type == SoundType.COUGHING) clip.coughWindows >= MIN_COUGH_WINDOWS
+        else clip.talkWindows + clip.laughWindows + clip.coughWindows >= MIN_VOICE_WINDOWS
+        if (!enough) {
             clip.part.delete()
             return
         }
         addEvent(
             SoundEvent(
-                type = if (clip.laughWindows >= MIN_LAUGH_WINDOWS) SoundType.LAUGHING else SoundType.TALKING,
+                type = type,
                 startedAt = wallTimeAt(clip.startSample),
                 durationMs = AudioConfig.samplesToMs(total - clip.startSample),
                 clip = NightStore.finalise(clip.part),
@@ -196,7 +220,7 @@ class SoundAnalyzer(
                 leadInMs = AudioConfig.samplesToMs(clip.startSample - clip.clipStart),
                 peakDb = peakDb(clip.peak),
                 floorDb = clip.floorDb.toFloat(),
-                count = 0,
+                count = if (type == SoundType.COUGHING) clip.coughs else 0,
             ),
         )
     }
@@ -297,6 +321,9 @@ class SoundAnalyzer(
         const val SNORE_THRESHOLD = 0.3f
         const val FAINT_SNORE_THRESHOLD = 0.1f
 
+        // Chosen from sample recordings only; at bedroom distance quiet coughs often score as speech.
+        const val COUGH_THRESHOLD = 0.5f
+
         // Bring each window to about -25 dBFS, boosting by at most 30 dB.
         const val TARGET_RMS = 0.056
         const val MAX_GAIN = 31.6
@@ -307,6 +334,7 @@ class SoundAnalyzer(
         const val VOICE_MAX_SAMPLES = AudioConfig.SAMPLE_RATE * 120
         const val MIN_VOICE_WINDOWS = 3
         const val MIN_LAUGH_WINDOWS = 2
+        const val MIN_COUGH_WINDOWS = 1
 
         const val SNORE_MERGE_SAMPLES = AudioConfig.SAMPLE_RATE * 120
         const val SNORE_SAMPLE_SAMPLES = AudioConfig.SAMPLE_RATE * 30

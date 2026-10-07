@@ -157,6 +157,7 @@ class RecordingService : Service() {
             SoundType.TALKING -> status.copy(talking = status.talking + 1)
             SoundType.LAUGHING -> status.copy(laughing = status.laughing + 1)
             SoundType.SNORING -> status.copy(snoring = status.snoring + 1)
+            SoundType.COUGHING -> status.copy(coughing = status.coughing + 1)
             SoundType.RECORDING -> status
         }
     }

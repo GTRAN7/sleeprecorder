@@ -66,6 +66,16 @@ class SoundAnalyzerTest {
         assertEquals(2, events.size)
     }
 
+    /** `cough.wav` is two coughing fits, at 20 s and 80 s, in a quiet room. */
+    @Test
+    fun labelsCoughsAsCoughingNotTalking() {
+        val events = analyse("cough.wav")
+
+        assertEquals(2, events.count { it.type == SoundType.COUGHING })
+        assertEquals(0, events.count { it.type == SoundType.TALKING })
+        events.forEach { assertTrue("counted at least one cough", it.count >= 1) }
+    }
+
     private fun analyse(asset: String): List<SoundEvent> {
         val assets = instrumentation.context.assets
         assumeTrue("$asset is not bundled", assets.list("").orEmpty().contains(asset))

@@ -8,6 +8,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -224,11 +225,11 @@ private fun ConfirmDelete(title: String, text: String, onConfirm: () -> Unit, on
 /** The night from start to end, one lane per kind of sound, with a mark wherever one was heard. */
 @Composable
 private fun Timeline(night: Night) {
-    val lanes = listOf(SoundType.TALKING, SoundType.LAUGHING, SoundType.SNORING)
+    val lanes = listOf(SoundType.TALKING, SoundType.LAUGHING, SoundType.SNORING, SoundType.COUGHING)
     val spanMs = (night.endTime() - night.startedAt).coerceAtLeast(1)
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Canvas(Modifier.fillMaxWidth().height(40.dp)) {
+            Canvas(Modifier.fillMaxWidth().height(54.dp)) {
                 val gap = 5.dp.toPx()
                 val laneHeight = (size.height - gap * (lanes.size - 1)) / lanes.size
                 val radius = CornerRadius(laneHeight / 2)
@@ -259,7 +260,7 @@ private fun Timeline(night: Night) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 lanes.forEach { type ->
                     Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.size(8.dp).clip(CircleShape).background(type.color()))
@@ -342,6 +343,7 @@ private fun EventRow(
 }
 
 private fun SoundEvent.detail(): String = when (type) {
+    SoundType.COUGHING -> "${formatDuration(durationMs)}, about ${countOf(count, "cough")}"
     SoundType.SNORING ->
         "${formatDuration(durationMs)}, about ${countOf(count, "snore")} · ${formatDuration(clipMs)} sample"
     else -> formatDuration(durationMs)

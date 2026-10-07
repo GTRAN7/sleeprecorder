@@ -102,15 +102,19 @@ private val NightColors = darkColorScheme(
 )
 
 fun SoundType.color(): Color = when (this) {
-    SoundType.TALKING -> Color(0xFF7FB2E8)
-    SoundType.LAUGHING -> Amber
-    SoundType.SNORING -> Color(0xFFB79AE0)
+    // Slots 1-4 of the reference dark categorical palette, in order; checked for colour-blind
+    // separation against the card surface. Always shown next to the type's name.
+    SoundType.TALKING -> Color(0xFF3987E5)
+    SoundType.LAUGHING -> Color(0xFFD95926)
+    SoundType.SNORING -> Color(0xFF199E70)
+    SoundType.COUGHING -> Color(0xFFC98500)
     SoundType.RECORDING -> Color(0xFF8A93A6)
 }
 
 private enum class Tab(val label: String, val icon: Int) {
     RECORD("Record", R.drawable.ic_mic),
     NIGHTS("Nights", R.drawable.ic_moon),
+    TRENDS("Trends", R.drawable.ic_chart),
 }
 
 @Composable
@@ -170,11 +174,12 @@ private fun App(vm: MainViewModel = viewModel()) {
         },
     ) { insets ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            // Clip below the status bar so scrolled content does not run under its icons.
+            modifier = Modifier.fillMaxSize().padding(top = insets.calculateTopPadding()),
             contentPadding = PaddingValues(
                 start = 16.dp,
                 end = 16.dp,
-                top = insets.calculateTopPadding() + 16.dp,
+                top = 16.dp,
                 bottom = insets.calculateBottomPadding() + 16.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -202,6 +207,7 @@ private fun App(vm: MainViewModel = viewModel()) {
                         item { NightCard(latest, onClick = { openNightId = latest.id }) }
                     }
                 }
+                Tab.TRENDS -> item { TrendsScreen(nights) }
                 Tab.NIGHTS -> {
                     item { SectionTitle(if (nights.isEmpty()) "Nights" else countOf(nights.size, "night")) }
                     if (nights.isEmpty()) {
@@ -268,6 +274,7 @@ private fun RecorderPanel(
                     LiveCount(SoundType.TALKING, status.talking)
                     LiveCount(SoundType.LAUGHING, status.laughing)
                     LiveCount(SoundType.SNORING, status.snoring)
+                    LiveCount(SoundType.COUGHING, status.coughing)
                 }
                 OutlinedButton(onClick = onStop) { Text("Stop", color = MaterialTheme.colorScheme.error) }
             } else {

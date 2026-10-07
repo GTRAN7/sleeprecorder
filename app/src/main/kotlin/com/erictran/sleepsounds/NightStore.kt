@@ -25,6 +25,7 @@ enum class SoundType(val label: String) {
     TALKING("Talking"),
     LAUGHING("Laughing"),
     SNORING("Snoring"),
+    COUGHING("Coughing"),
 
     /** A piece of a full-night recording made by version 0.1. */
     RECORDING("Full recording"),

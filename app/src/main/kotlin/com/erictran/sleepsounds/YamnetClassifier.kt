@@ -14,7 +14,7 @@ import java.nio.channels.FileChannel
  */
 class YamnetClassifier(context: Context) : Closeable {
     /** The strongest score, 0 to 1, among the model's classes for each kind of sound. */
-    data class Scores(val talk: Float, val laugh: Float, val snore: Float)
+    data class Scores(val talk: Float, val laugh: Float, val snore: Float, val cough: Float)
 
     private val interpreter: Interpreter
     private val input = ByteBuffer.allocateDirect(WINDOW_SAMPLES * 4).order(ByteOrder.nativeOrder())
@@ -41,6 +41,7 @@ class YamnetClassifier(context: Context) : Closeable {
             talk = TALK_CLASSES.maxOf { scores[it] },
             laugh = LAUGH_CLASSES.maxOf { scores[it] },
             snore = scores[SNORING_CLASS],
+            cough = COUGH_CLASSES.maxOf { scores[it] },
         )
     }
 
@@ -58,5 +59,8 @@ class YamnetClassifier(context: Context) : Closeable {
         // Laughter, baby laughter, giggle, snicker, belly laugh, chuckle.
         private val LAUGH_CLASSES = intArrayOf(13, 14, 15, 16, 17, 18)
         private const val SNORING_CLASS = 38
+
+        // Cough, throat clearing.
+        private val COUGH_CLASSES = intArrayOf(42, 43)
     }
 }
